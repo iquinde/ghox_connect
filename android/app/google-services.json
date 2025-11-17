@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "907645064363",
+    "project_id": "ghoxconnect",
+    "storage_bucket": "ghoxconnect.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:907645064363:android:b770c1e3313f92dad693ee",
+        "android_client_info": {
+          "package_name": "com.iqr.ghox_connect"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB5YCA3yolPCc1_AbdT4mxW-GCCc7NWNOw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
