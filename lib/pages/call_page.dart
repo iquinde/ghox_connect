@@ -54,7 +54,7 @@ class _CallPageState extends State<CallPage>
       {'urls': 'stun:stun.l.google.com:19302'},
       {'urls': 'stun:stun1.l.google.com:19302'},
       {'urls': 'stun:stun2.l.google.com:19302'},
-      
+
       // Servidores TURN públicos (mejoran conectividad en NAT restrictivo)
       {
         'urls': 'turn:openrelay.metered.ca:80',
@@ -63,7 +63,7 @@ class _CallPageState extends State<CallPage>
       },
       {
         'urls': 'turn:openrelay.metered.ca:443',
-        'username': 'openrelayproject', 
+        'username': 'openrelayproject',
         'credential': 'openrelayproject',
       },
       {
@@ -77,25 +77,74 @@ class _CallPageState extends State<CallPage>
   @override
   void initState() {
     super.initState();
-    _pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 900),
-    );
-    _pulseAnim = Tween<double>(
-      begin: 0.0,
-      end: 1.0,
-    ).animate(CurvedAnimation(parent: _pulseController, curve: Curves.easeOut));
 
-    _initRenderers();
-    _connectSignalingSafe();
-    _startLocalMediaAndPeer();
-    if (widget.isCaller) _startRinging();
+    try {
+      print('📞 [CallPage] *** INIT STATE *** INICIANDO');
+      print(
+        '📞 [CallPage] *** PARAMS *** myUserId: ${widget.myUserId}, otherUserId: ${widget.otherUserId}',
+      );
+      print(
+        '📞 [CallPage] *** PARAMS *** callId: ${widget.callId}, isCaller: ${widget.isCaller}',
+      );
+      print(
+        '📞 [CallPage] *** PARAMS *** pendingSignals: ${widget.pendingSignals?.length ?? 0}',
+      );
+
+      _pulseController = AnimationController(
+        vsync: this,
+        duration: const Duration(milliseconds: 900),
+      );
+      _pulseAnim = Tween<double>(begin: 0.0, end: 1.0).animate(
+        CurvedAnimation(parent: _pulseController, curve: Curves.easeOut),
+      );
+
+      print('📞 [CallPage] *** INICIANDO RENDERERS ***');
+      _initRenderers().catchError((e) {
+        print('❌ [CallPage] *** ERROR EN RENDERERS *** $e');
+      });
+
+      print('📞 [CallPage] *** CONECTANDO SIGNALING ***');
+      _connectSignalingSafe();
+
+      print('📞 [CallPage] *** INICIANDO MEDIA Y PEER ***');
+      _startLocalMediaAndPeer().catchError((e) {
+        print('❌ [CallPage] *** ERROR EN MEDIA/PEER *** $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error iniciando llamada: $e')),
+          );
+        }
+      });
+
+      if (widget.isCaller) {
+        print('📞 [CallPage] *** SOY CALLER - INICIANDO RINGING ***');
+        _startRinging();
+      } else {
+        print('📞 [CallPage] *** SOY RECEIVER - NO RINGING ***');
+      }
+
+      print('📞 [CallPage] *** INIT STATE COMPLETADO ***');
+    } catch (e, stackTrace) {
+      print('❌ [CallPage] *** CRASH EN INIT STATE *** $e');
+      print('❌ [CallPage] *** STACK TRACE *** $stackTrace');
+
+      // Intentar navegar de vuelta si hay un crash crítico
+      if (mounted) {
+        Future.delayed(Duration(milliseconds: 100), () {
+          if (mounted) {
+            Navigator.of(context).pop();
+          }
+        });
+      }
+    }
   }
 
   void _processPendingSignals() {
     if (widget.pendingSignals != null && widget.pendingSignals!.isNotEmpty) {
-      print('CallPage: Processing ${widget.pendingSignals!.length} pending WebRTC signals');
-      
+      print(
+        'CallPage: Processing ${widget.pendingSignals!.length} pending WebRTC signals',
+      );
+
       // Procesar señales después de un pequeño delay para asegurar que todo esté inicializado
       Future.delayed(Duration(milliseconds: 500), () {
         for (final signal in widget.pendingSignals!) {
@@ -118,7 +167,7 @@ class _CallPageState extends State<CallPage>
       SignalingService.instance.onError = (err) {
         print('CallPage: Signaling error: $err');
       };
-      
+
       // Solo conectar si no hay conexión existente
       final url = baseUrl;
       if (url.isNotEmpty) {
@@ -133,26 +182,57 @@ class _CallPageState extends State<CallPage>
 
   Future<void> _startLocalMediaAndPeer() async {
     try {
-      print('CallPage: Requesting user media...');
+      print('🎤 [CallPage] *** INICIANDO LOCAL MEDIA ***');
+      print('🎤 [CallPage] *** SOLICITANDO PERMISOS DE CÁMARA/MICRÓFONO ***');
+
       final Map<String, dynamic> mediaConstraints = {
         'audio': true,
         'video': {'facingMode': 'user'},
       };
 
+      print(
+        '🎤 [CallPage] *** OBTENIENDO USER MEDIA *** con constraints: $mediaConstraints',
+      );
+
       _localStream = await navigator.mediaDevices.getUserMedia(
         mediaConstraints,
       );
-      _localRenderer.srcObject = _localStream;
 
+      if (_localStream == null) {
+        throw Exception('Local stream es null después de getUserMedia');
+      }
+
+      print(
+        '🎤 [CallPage] *** LOCAL STREAM OBTENIDO *** tracks: ${_localStream!.getTracks().length}',
+      );
+
+      if (mounted) {
+        _localRenderer.srcObject = _localStream;
+        print('🎤 [CallPage] *** LOCAL RENDERER CONFIGURADO ***');
+      }
+
+      print('🔗 [CallPage] *** CREANDO PEER CONNECTION ***');
       _pc = await createPeerConnection(_iceServers, {});
 
+      if (_pc == null) {
+        throw Exception(
+          'Peer connection es null después de createPeerConnection',
+        );
+      }
+
+      print('🔗 [CallPage] *** AGREGANDO TRACKS AL PEER ***');
       _localStream?.getTracks().forEach((t) {
         try {
+          print('🔗 [CallPage] *** AGREGANDO TRACK *** ${t.kind}: ${t.id}');
           _pc?.addTrack(t, _localStream!);
         } catch (e) {
-          print('CallPage: Failed to add track: $e');
+          print('❌ [CallPage] *** ERROR AGREGANDO TRACK *** $e');
         }
       });
+
+      print(
+        '🎤 [CallPage] *** LOCAL MEDIA Y PEER CONFIGURADOS EXITOSAMENTE ***',
+      );
 
       _pc?.onTrack = (RTCTrackEvent event) {
         if (event.streams.isNotEmpty) {
@@ -165,11 +245,12 @@ class _CallPageState extends State<CallPage>
       _pc?.onIceCandidate = (RTCIceCandidate candidate) {
         if (candidate.candidate != null) {
           try {
-            SignalingService.instance.sendWebRTCSignal(widget.otherUserId, 'ice', {
-              'candidate': candidate.candidate,
-              'sdpMid': candidate.sdpMid,
-              'sdpMLineIndex': candidate.sdpMLineIndex,
-            });
+            SignalingService.instance
+                .sendWebRTCSignal(widget.otherUserId, 'ice', {
+                  'candidate': candidate.candidate,
+                  'sdpMid': candidate.sdpMid,
+                  'sdpMLineIndex': candidate.sdpMLineIndex,
+                });
           } catch (e) {
             print('CallPage: sendWebRTCSignal(ice) failed: $e');
           }
@@ -194,72 +275,158 @@ class _CallPageState extends State<CallPage>
       });
 
       _pc?.onIceConnectionState = (RTCIceConnectionState state) {
-        print('CallPage: ICE Connection State: $state');
-        if (state == RTCIceConnectionState.RTCIceConnectionStateConnected) {
-          print('CallPage: ICE Connection ESTABLISHED! 🧊');
-        } else if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
-          print('CallPage: ICE Connection FAILED! ❌');
-          _printDiagnosticInfo();
-        } else if (state == RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
-          print('CallPage: ICE Connection DISCONNECTED! 📡');
+        print('🧊 [CallPage] *** ICE CONNECTION STATE *** $state');
+
+        switch (state) {
+          case RTCIceConnectionState.RTCIceConnectionStateConnected:
+            print(
+              '🧊 [CallPage] *** ICE CONNECTED *** Conexión ICE establecida exitosamente! 🎉',
+            );
+            break;
+          case RTCIceConnectionState.RTCIceConnectionStateFailed:
+            print('🧊 [CallPage] *** ICE FAILED *** Conexión ICE falló! ❌');
+            _printDiagnosticInfo();
+            break;
+          case RTCIceConnectionState.RTCIceConnectionStateDisconnected:
+            print(
+              '🧊 [CallPage] *** ICE DISCONNECTED *** Conexión ICE desconectada! 📡',
+            );
+            break;
+          case RTCIceConnectionState.RTCIceConnectionStateClosed:
+            print('🧊 [CallPage] *** ICE CLOSED *** Conexión ICE cerrada! 🔒');
+            break;
+          case RTCIceConnectionState.RTCIceConnectionStateChecking:
+            print(
+              '🧊 [CallPage] *** ICE CHECKING *** Verificando conectividad ICE...',
+            );
+            break;
+          case RTCIceConnectionState.RTCIceConnectionStateCompleted:
+            print(
+              '🧊 [CallPage] *** ICE COMPLETED *** Verificación ICE completada!',
+            );
+            break;
+          case RTCIceConnectionState.RTCIceConnectionStateNew:
+            print(
+              '🧊 [CallPage] *** ICE NEW *** Nueva conexión ICE inicializada',
+            );
+            break;
+          default:
+            print(
+              '🧊 [CallPage] *** ICE UNKNOWN *** Estado ICE desconocido: $state',
+            );
         }
       };
 
       _pc?.onConnectionState = (RTCPeerConnectionState state) {
+        print('🔗 [CallPage] *** WEBRTC CONNECTION STATE *** $state');
+
         if (mounted) {
           if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
-            print('CallPage: WebRTC Connection ESTABLISHED! 🎉');
+            print(
+              '🔗 [CallPage] *** WEBRTC CONNECTED *** Conexión WebRTC establecida! 🎉',
+            );
             _connectionTimeoutTimer?.cancel(); // Cancelar timeout
             _stopRinging();
             setState(() => _inCall = true);
-          }
-          
-          if (state ==
-                  RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
-              state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
-              state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
-            print('CallPage: WebRTC Connection FAILED/CLOSED: $state');
+          } else if (state ==
+              RTCPeerConnectionState.RTCPeerConnectionStateConnecting) {
+            print(
+              '🔗 [CallPage] *** WEBRTC CONNECTING *** Estableciendo conexión WebRTC...',
+            );
+          } else if (state ==
+              RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
+            print(
+              '🔗 [CallPage] *** WEBRTC DISCONNECTED *** Conexión WebRTC desconectada! 📡',
+            );
             _endLocalCall();
+          } else if (state ==
+              RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+            print(
+              '🔗 [CallPage] *** WEBRTC FAILED *** Conexión WebRTC falló! ❌',
+            );
+            _endLocalCall();
+          } else if (state ==
+              RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
+            print(
+              '🔗 [CallPage] *** WEBRTC CLOSED *** Conexión WebRTC cerrada! 🔒',
+            );
+            _endLocalCall();
+          } else {
+            print('🔗 [CallPage] *** WEBRTC OTHER *** Estado: $state');
           }
+        } else {
+          print(
+            '🔗 [CallPage] *** WEBRTC STATE CHANGE *** Widget no montado, ignorando estado: $state',
+          );
         }
       };
 
       if (widget.isCaller) {
         // crear offer si la señalización está disponible; si no, seguimos en modo visual.
         try {
-          print('CallPage: 📤 Creando y enviando OFFER a ${widget.otherUserId}');
-          print('CallPage: 🔍 PeerConnection state antes del offer: ${_pc?.connectionState}');
-          print('CallPage: 🔍 Signaling state antes del offer: ${_pc?.signalingState}');
+          print(
+            'CallPage: 📤 Creando y enviando OFFER a ${widget.otherUserId}',
+          );
+          print(
+            'CallPage: 🔍 PeerConnection state antes del offer: ${_pc?.connectionState}',
+          );
+          print(
+            'CallPage: 🔍 Signaling state antes del offer: ${_pc?.signalingState}',
+          );
           final offer = await _pc!.createOffer();
           print('CallPage: 🔧 Setting local description (offer)...');
           await _pc!.setLocalDescription(offer);
-          print('CallPage: ✅ Local description set, SDP length: ${offer.sdp?.length ?? 0}');
-          print('CallPage: 📄 Offer SDP preview: ${offer.sdp?.substring(0, 100)}...');
-          print('CallPage: 🔍 Signaling state después del offer: ${_pc?.signalingState}');
-          SignalingService.instance.sendWebRTCSignal(widget.otherUserId, 'offer', {
-            'sdp': offer.sdp,
-            'type': offer.type,
-          });
+          print(
+            'CallPage: ✅ Local description set, SDP length: ${offer.sdp?.length ?? 0}',
+          );
+          print(
+            'CallPage: 📄 Offer SDP preview: ${offer.sdp?.substring(0, 100)}...',
+          );
+          print(
+            'CallPage: 🔍 Signaling state después del offer: ${_pc?.signalingState}',
+          );
+          SignalingService.instance.sendWebRTCSignal(
+            widget.otherUserId,
+            'offer',
+            {'sdp': offer.sdp, 'type': offer.type},
+          );
           print('CallPage: 📤 OFFER enviado via SignalingService');
         } catch (e) {
           print('CallPage: ❌ createOffer failed: $e');
           print('CallPage: ❌ Stack trace: ${StackTrace.current}');
         }
       }
-      
+
       // IMPORTANTE: Procesar señales pendientes DESPUÉS de que WebRTC esté listo
       _processPendingSignals();
-      
-    } catch (e) {
-      print('startLocalMediaAndPeer error: $e');
-      // no cerramos la pantalla: seguimos en modo visual para demo
+    } catch (e, stackTrace) {
+      print('❌ [CallPage] *** ERROR CRÍTICO EN LOCAL MEDIA *** $e');
+      print('❌ [CallPage] *** STACK TRACE *** $stackTrace');
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error de permisos o cámara: $e'),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 3),
+          ),
+        );
+
+        // Dar tiempo para mostrar el error antes de cerrar
+        await Future.delayed(Duration(seconds: 1));
+
+        if (mounted) {
+          print('❌ [CallPage] *** CERRANDO CALLPAGE POR ERROR CRÍTICO ***');
+          Navigator.of(context).pop();
+        }
+      }
     }
   }
 
   void _printDiagnosticInfo() {
     print('🔍 DIAGNOSTIC INFO:');
     print('- Device: ${widget.isCaller ? "CALLER" : "RECEIVER"}');
-    print('- My ID: ${widget.myUserId}');  
+    print('- My ID: ${widget.myUserId}');
     print('- Other ID: ${widget.otherUserId}');
     print('- In Call: $_inCall');
     print('- Local Stream: ${_localStream != null}');
@@ -309,7 +476,7 @@ class _CallPageState extends State<CallPage>
     print('CallPage: 📨 Señal recibida: $msg');
     final type = msg['type'] ?? msg['Type'] ?? msg['event'];
     final data = msg['payload'] ?? msg['data'] ?? msg;
-    
+
     print('CallPage: 🔍 Procesando tipo: $type');
 
     switch (type) {
@@ -338,10 +505,11 @@ class _CallPageState extends State<CallPage>
             await _pc!.setLocalDescription(answer);
             print('CallPage: ✅ Local description set, answer ready');
             print('CallPage: 📤 Enviando ANSWER a ${widget.otherUserId}');
-            SignalingService.instance.sendWebRTCSignal(widget.otherUserId, 'answer', {
-              'sdp': answer.sdp,
-              'type': answer.type,
-            });
+            SignalingService.instance.sendWebRTCSignal(
+              widget.otherUserId,
+              'answer',
+              {'sdp': answer.sdp, 'type': answer.type},
+            );
             print('CallPage: ✅ ANSWER enviado exitosamente');
           } catch (e) {
             print('CallPage: ❌ handle offer failed: $e');
@@ -351,7 +519,9 @@ class _CallPageState extends State<CallPage>
         }
       case 'answer':
         {
-          print('CallPage: 📞 Recibiendo ANSWER de ${msg['from'] ?? widget.otherUserId}');
+          print(
+            'CallPage: 📞 Recibiendo ANSWER de ${msg['from'] ?? widget.otherUserId}',
+          );
           print('CallPage: 🔍 PeerConnection state: ${_pc?.connectionState}');
           print('CallPage: 🔍 Signaling state: ${_pc?.signalingState}');
           if (_pc == null) {
@@ -362,7 +532,9 @@ class _CallPageState extends State<CallPage>
           final sdp = data['sdp'];
           final t = data['type'] ?? 'answer';
           print('CallPage: 📄 Answer SDP length: ${sdp?.length ?? 0}');
-          print('CallPage: 📄 Answer SDP preview: ${sdp?.substring(0, 100)}...');
+          print(
+            'CallPage: 📄 Answer SDP preview: ${sdp?.substring(0, 100)}...',
+          );
           final remote = RTCSessionDescription(sdp, t);
           try {
             print('CallPage: 🔧 Setting remote description (answer)...');
@@ -377,9 +549,13 @@ class _CallPageState extends State<CallPage>
         }
       case 'ice':
         {
-          print('CallPage: 🧊 Recibiendo ICE candidate de ${msg['from'] ?? 'unknown'}');
+          print(
+            'CallPage: 🧊 Recibiendo ICE candidate de ${msg['from'] ?? 'unknown'}',
+          );
           print('CallPage: 🔍 PeerConnection state: ${_pc?.connectionState}');
-          print('CallPage: 🔍 ICE connection state: ${_pc?.iceConnectionState}');
+          print(
+            'CallPage: 🔍 ICE connection state: ${_pc?.iceConnectionState}',
+          );
           if (_pc == null) {
             print('CallPage: ❌ Peer connection not ready for ICE, skipping');
             return;
@@ -389,16 +565,21 @@ class _CallPageState extends State<CallPage>
             final candidateStr = c is Map ? (c['candidate'] ?? c['cand']) : c;
             final sdpMid = c is Map ? c['sdpMid'] : null;
             final sdpMLineIndex = c is Map ? c['sdpMLineIndex'] : null;
-            
-            print('CallPage: 🧊 Candidate: ${candidateStr?.toString().substring(0, 50)}...');
-            print('CallPage: 🧊 sdpMid: $sdpMid, sdpMLineIndex: $sdpMLineIndex');
-            
+
+            print(
+              'CallPage: 🧊 Candidate: ${candidateStr?.toString().substring(0, 50)}...',
+            );
+            print(
+              'CallPage: 🧊 sdpMid: $sdpMid, sdpMLineIndex: $sdpMLineIndex',
+            );
+
             // Validar que candidate no sea null o vacío
-            if (candidateStr == null || candidateStr.toString().trim().isEmpty) {
+            if (candidateStr == null ||
+                candidateStr.toString().trim().isEmpty) {
               print('CallPage: ❌ Invalid candidate, skipping');
               break;
             }
-            
+
             final candidate = RTCIceCandidate(
               candidateStr.toString(),
               sdpMid?.toString(),
@@ -423,11 +604,11 @@ class _CallPageState extends State<CallPage>
         {
           final userId = msg['to'] ?? msg['userId'];
           print('CallPage: User $userId is offline - cannot establish call');
-          
+
           // Solo mostrar mensaje una vez
           if (!_peerOfflineShown && mounted) {
             _peerOfflineShown = true;
-            
+
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text('El usuario no está disponible'),
@@ -440,7 +621,7 @@ class _CallPageState extends State<CallPage>
                 ),
               ),
             );
-            
+
             // Auto-cerrar la llamada después de 2 segundos
             Timer(Duration(seconds: 2), () {
               if (mounted) {
@@ -465,21 +646,47 @@ class _CallPageState extends State<CallPage>
   }
 
   Future<void> _hangUp() async {
+    print('📞 [CallPage] *** HANG UP INICIADO *** Usuario colgó la llamada');
+    print(
+      '📞 [CallPage] *** HANG UP *** callId: ${widget.callId}, otherUserId: ${widget.otherUserId}',
+    );
+
     try {
+      print(
+        '📞 [CallPage] *** HANG UP *** Enviando señal "end" al otro usuario',
+      );
       SignalingService.instance.sendSignal(widget.otherUserId, 'end', {
         'callId': widget.callId,
       });
-    } catch (_) {}
+    } catch (e) {
+      print('📞 [CallPage] *** HANG UP *** Error enviando señal end: $e');
+    }
+
     if (widget.callId != null && widget.callId!.isNotEmpty) {
       try {
+        print(
+          '📞 [CallPage] *** HANG UP *** Enviando endCallRequest al servidor',
+        );
         await endCallRequest(widget.callId!);
       } catch (e) {
-        print('endCallRequest error: $e');
+        print('📞 [CallPage] *** HANG UP *** endCallRequest error: $e');
       }
     }
+
+    print(
+      '📞 [CallPage] *** HANG UP *** Deteniendo ringing y terminando llamada local',
+    );
     _stopRinging();
     _endLocalCall();
-    if (mounted) Navigator.of(context).pop();
+
+    if (mounted) {
+      print('📞 [CallPage] *** HANG UP *** Navegando de vuelta (pop)');
+      Navigator.of(context).pop();
+    } else {
+      print(
+        '📞 [CallPage] *** HANG UP *** Widget no montado, no se puede navegar',
+      );
+    }
   }
 
   void _endLocalCall() {
@@ -509,7 +716,7 @@ class _CallPageState extends State<CallPage>
         _pc!.onAddStream = null;
         _pc!.onRemoveStream = null;
       }
-      
+
       _pc?.close();
       _pc = null;
       _localStream?.getTracks().forEach((t) => t.stop());
@@ -524,14 +731,25 @@ class _CallPageState extends State<CallPage>
 
   @override
   void dispose() {
+    print('📞 [CallPage] *** DISPOSE INICIADO *** Cerrando CallPage');
+    print(
+      '📞 [CallPage] *** DISPOSE *** _inCall: $_inCall, _ringing: $_ringing',
+    );
+    print('📞 [CallPage] *** DISPOSE *** Limpiando recursos...');
+
     SignalingService.instance.onSignal = null;
     SignalingService.instance.dispose();
     _ringTimeoutTimer?.cancel();
     _connectionTimeoutTimer?.cancel(); // Cancelar timeout de conexión
     _pulseController.dispose();
+
+    print('📞 [CallPage] *** DISPOSE *** Limpiando recursos WebRTC...');
     _cleanupResources(); // Usar método sin setState
+
     _localRenderer.dispose();
     _remoteRenderer.dispose();
+
+    print('📞 [CallPage] *** DISPOSE COMPLETADO ***');
     super.dispose();
   }
 

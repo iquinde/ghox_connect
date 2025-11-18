@@ -5,7 +5,6 @@ import 'package:http/http.dart' as http;
 import '../services/storage_service.dart';
 import '../services/signaling_service.dart';
 import '../services/api.dart';
-import '../services/call_service.dart';
 import 'call_page.dart';
 
 class HomePage extends StatefulWidget {
@@ -24,10 +23,13 @@ class _HomePageState extends State<HomePage> {
   Timer? _reconnectTimer;
   bool _isConnected = false;
   bool _inActiveCall = false; // Nueva variable para controlar llamadas activas
-  
+
   // Buffer para señales WebRTC pendientes
   List<Map<String, dynamic>> _pendingWebRTCSignals = [];
-  String? _currentCallerId;  // Función para obtener el nombre de usuario
+  String? _currentCallerId;
+  String? _currentCallId; // Para rastrear callId actual
+
+  // Función para obtener el nombre de usuario
   Future<String> fetchUsername(String userId) async {
     try {
       // Probar diferentes endpoints
@@ -47,17 +49,10 @@ class _HomePageState extends State<HomePage> {
 
       for (final url in endpoints) {
         try {
-          print('fetchUsername: intentando endpoint $url');
-
           final response = await http.get(Uri.parse(url), headers: headers);
-
-          print(
-            'fetchUsername: status=${response.statusCode}, body=${response.body}',
-          );
 
           if (response.statusCode == 200) {
             final dynamic data = json.decode(response.body);
-            print('fetchUsername: datos recibidos: $data');
 
             String name = 'Usuario';
             if (data is Map<String, dynamic>) {
@@ -72,7 +67,6 @@ class _HomePageState extends State<HomePage> {
                   'Usuario';
             }
 
-            print('fetchUsername: nombre final obtenido: $name');
             if (name != 'Usuario') {
               return name; // Solo retornar si encontramos un nombre real
             }
@@ -95,7 +89,7 @@ class _HomePageState extends State<HomePage> {
   String maskUserId(String id) {
     // Remover cualquier caracter no numérico
     final numbersOnly = id.replaceAll(RegExp(r'[^0-9]'), '');
-    
+
     if (numbersOnly.length <= 3) {
       return numbersOnly;
     } else if (numbersOnly.length <= 6) {
@@ -123,11 +117,8 @@ class _HomePageState extends State<HomePage> {
 
       final response = await http.get(Uri.parse(url), headers: headers);
 
-      print('fetchUsers: status=${response.statusCode}, body=${response.body}');
-
       if (response.statusCode == 200) {
         final dynamic rawData = json.decode(response.body);
-        print('fetchUsers: tipo de datos recibidos: ${rawData.runtimeType}');
 
         List<dynamic> users = [];
 
@@ -153,15 +144,13 @@ class _HomePageState extends State<HomePage> {
         final filteredUsers = users
             .where((user) => user is Map<String, dynamic>)
             .cast<Map<String, dynamic>>()
-            .where((user) => (user['userId']?.toString() ?? user['id']?.toString()) != currentUserId)
+            .where(
+              (user) =>
+                  (user['userId']?.toString() ?? user['id']?.toString()) !=
+                  currentUserId,
+            )
             .toList();
 
-        print(
-          'fetchUsers: ${filteredUsers.length} usuarios encontrados (excluyendo usuario actual)',
-        );
-        print(
-          'fetchUsers: usuarios: ${filteredUsers.map((u) => u['username'] ?? u['name'] ?? u['userId'] ?? u['id']).toList()}',
-        );
         return filteredUsers;
       }
       print('fetchUsers: error de status ${response.statusCode}');
@@ -177,7 +166,9 @@ class _HomePageState extends State<HomePage> {
     super.initState();
 
     print('HomePage: initState - estado inicial _isConnected: $_isConnected');
-    print('HomePage: initState - SignalingService.isConnected: ${SignalingService.instance.isConnected}');
+    print(
+      'HomePage: initState - SignalingService.isConnected: ${SignalingService.instance.isConnected}',
+    );
 
     // Conectar al WebSocket para recibir llamadas entrantes
     _connectToSignaling();
@@ -231,8 +222,15 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _connectToSignaling() async {
     try {
+      print('🔗 [HomePage] *** INICIANDO CONEXIÓN WEBSOCKET ***');
+      print('🔗 [HomePage] *** BASE URL ORIGINAL *** $baseUrl');
+      print('🔗 [HomePage] *** USER ID *** ${widget.userId}');
+
       // Obtener token para autenticación
       final token = await StorageService.getToken();
+      print(
+        '🔑 [HomePage] *** TOKEN *** ${token != null ? '${token.substring(0, 30)}...' : 'null'}',
+      );
 
       // Convertir HTTP URL a WebSocket URL
       String wsUrl = baseUrl;
@@ -242,16 +240,7 @@ class _HomePageState extends State<HomePage> {
         wsUrl = wsUrl.replaceFirst('https://', 'wss://');
       }
 
-      print('_connectToSignaling: conectando a $wsUrl');
-
-      // Agregar token como query parameter si existe
-      if (token != null) {
-        final uri = Uri.parse(wsUrl);
-        final params = Map<String, String>.from(uri.queryParameters);
-        params['token'] = token;
-        wsUrl = uri.replace(queryParameters: params).toString();
-        print('_connectToSignaling: URL con token: $wsUrl');
-      }
+      print('🔗 [HomePage] *** WS URL CONVERTIDO *** $wsUrl');
 
       await SignalingService.instance.connect(wsUrl, widget.userId);
 
@@ -297,7 +286,9 @@ class _HomePageState extends State<HomePage> {
 
       // Verificar estado actual de conexión después de configurar callbacks
       if (mounted && SignalingService.instance.isConnected) {
-        print('HomePage: SignalingService ya está conectado, actualizando estado UI');
+        print(
+          'HomePage: SignalingService ya está conectado, actualizando estado UI',
+        );
         setState(() {
           _isConnected = true;
         });
@@ -309,33 +300,48 @@ class _HomePageState extends State<HomePage> {
 
   void _handleIncomingSignal(Map<String, dynamic> signal) {
     print('HomePage: Señal recibida: $signal');
-    
+
     final type =
         signal['type'] ?? signal['Type'] ?? signal['event'] ?? signal['action'];
-    
+
     print('HomePage: Tipo de señal detectado: $type');
 
     // Si estamos en una llamada activa, NO interceptar señales WebRTC
     // Dejar que el CallPage las maneje directamente
-    if (_inActiveCall && (type == 'offer' || type == 'ice' || type == 'answer')) {
-      print('HomePage: En llamada activa - NO interceptando señal WebRTC: $type');
+    if (_inActiveCall &&
+        (type == 'offer' || type == 'ice' || type == 'answer')) {
+      print(
+        'HomePage: En llamada activa - NO interceptando señal WebRTC: $type',
+      );
       return;
     }
 
-    // Señales de prueba (ping)
-    if (type == 'ping') {
-      print('HomePage: 🏓 PING recibido de: ${signal['from'] ?? 'unknown'}');
-      print('HomePage: 🏓 Mensaje: ${signal['payload']?['message'] ?? 'sin mensaje'}');
-      
-      // Mostrar snackbar temporal
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('🏓 Test signal recibido de ${signal['from'] ?? 'unknown'}'),
-            duration: Duration(seconds: 2),
-          ),
-        );
+    // Manejo de llamadas entrantes (protocolo correcto)
+    if (type == 'incoming-call') {
+      final callerId = signal['from']?.toString();
+      final callId = signal['callId']?.toString();
+      final meta = signal['meta'] ?? {};
+
+      print('HomePage: 📞 Llamada entrante de: $callerId, callId: $callId');
+      print('HomePage: 📋 Meta: $meta');
+
+      if (callerId != null && callerId != widget.userId) {
+        _currentCallerId = callerId;
+        _currentCallId = callId;
+        print('HomePage: Mostrando diálogo de llamada entrante');
+        _showIncomingCallDialog(callerId, callId);
       }
+      return;
+    }
+
+    // Respuestas de llamada
+    if (type == 'call-accepted') {
+      print('HomePage: ✅ Llamada aceptada por el receptor');
+      return;
+    }
+
+    if (type == 'call-rejected') {
+      print('HomePage: ❌ Llamada rechazada por el receptor');
       return;
     }
 
@@ -348,10 +354,12 @@ class _HomePageState extends State<HomePage> {
       if (from != null) {
         _pendingWebRTCSignals.add(signal);
 
-        // Si es una oferta, mostrar notificación de llamada entrante
-        if (type == 'offer') {
+        // Si es una oferta Y no estamos en llamada, mostrar notificación
+        if (type == 'offer' && !_inActiveCall) {
           _currentCallerId = from;
-          print('HomePage: Mostrando diálogo de llamada entrante para offer de: $from');
+          print(
+            'HomePage: Mostrando diálogo de llamada entrante para offer de: $from',
+          );
           _showIncomingCallDialog(from, signal['callId']?.toString());
         }
       }
@@ -359,17 +367,25 @@ class _HomePageState extends State<HomePage> {
     }
 
     // Señales de llamada entrante (basado en el servidor)
-    if (type == 'incoming_call' || type == 'call' || type == 'CallRequest' || type == 'call_request' || type == 'call_notification') {
+    if (type == 'incoming_call' ||
+        type == 'call' ||
+        type == 'CallRequest' ||
+        type == 'call_request' ||
+        type == 'call_notification') {
       final callerId = signal['from'] ?? signal['callerId'] ?? signal['caller'];
       final callId = signal['callId'] ?? signal['call_id'];
       print('HomePage: Llamada entrante de: $callerId, callId: $callId');
 
       if (callerId != null && callerId.toString() != widget.userId) {
-        print('HomePage: Mostrando diálogo de llamada entrante para: $callerId');
+        print(
+          'HomePage: Mostrando diálogo de llamada entrante para: $callerId',
+        );
         _showIncomingCallDialog(callerId.toString(), callId?.toString());
         _currentCallerId = callerId.toString();
       } else {
-        print('HomePage: Llamada ignorada - callerId es null o es el mismo usuario');
+        print(
+          'HomePage: Llamada ignorada - callerId es null o es el mismo usuario',
+        );
       }
     } else {
       print('HomePage: Tipo de señal no reconocido para llamadas: $type');
@@ -377,8 +393,10 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _showIncomingCallDialog(String callerId, String? callId) {
-    print('HomePage: _showIncomingCallDialog llamado para callerId: $callerId, callId: $callId');
-    
+    print(
+      'HomePage: _showIncomingCallDialog llamado para callerId: $callerId, callId: $callId',
+    );
+
     if (!mounted) {
       print('HomePage: Widget no está mounted, no se puede mostrar diálogo');
       return;
@@ -430,32 +448,74 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _acceptCall(String callerId, String? callId) {
-    // Marcar que estamos en una llamada activa
-    _inActiveCall = true;
-    print('HomePage: Marcando llamada como activa - _inActiveCall = true');
+    print(
+      '✅ [HomePage] *** ACEPTANDO LLAMADA *** de $callerId con callId: $callId',
+    );
+    print('✅ [HomePage] *** CALL ACCEPT *** mi userId: ${widget.userId}');
+    print(
+      '✅ [HomePage] *** PENDING SIGNALS *** ${_pendingWebRTCSignals.length} señales pendientes',
+    );
 
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => CallPage(
-          myUserId: widget.userId,
-          otherUserId: callerId,
-          callId: callId,
-          isCaller: false, // Es el receptor
-          pendingSignals: List.from(
-            _pendingWebRTCSignals,
-          ), // Pasar copia de las señales
-        ),
-      ),
-    ).then((_) {
-      // Cuando regresa del CallPage, marcar como no activa
-      _inActiveCall = false;
-      print('HomePage: Llamada terminada - _inActiveCall = false');
-    });
+    try {
+      // Marcar que estamos en una llamada activa
+      _inActiveCall = true;
+      print('✅ [HomePage] *** CALL STATE *** _inActiveCall = true');
 
-    // Limpiar buffer después de pasar al CallPage
-    _pendingWebRTCSignals.clear();
-    _currentCallerId = null;
+      print('✅ [HomePage] *** NAVEGANDO A CALL PAGE *** como receptor');
+
+      if (!mounted) {
+        print(
+          '❌ [HomePage] *** ERROR *** Widget no montado, cancelando navegación',
+        );
+        return;
+      }
+
+      Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => CallPage(
+                myUserId: widget.userId,
+                otherUserId: callerId,
+                callId: callId,
+                isCaller: false, // Es el receptor
+                pendingSignals: List.from(
+                  _pendingWebRTCSignals,
+                ), // Pasar copia de las señales
+              ),
+            ),
+          )
+          .then((_) {
+            // Cuando regresa del CallPage, marcar como no activa
+            if (mounted) {
+              _inActiveCall = false;
+              print(
+                '✅ [HomePage] *** LLAMADA ACEPTADA TERMINADA *** _inActiveCall = false',
+              );
+            }
+          })
+          .catchError((error) {
+            print('❌ [HomePage] *** ERROR EN NAVEGACIÓN *** $error');
+            if (mounted) {
+              _inActiveCall = false;
+            }
+          });
+
+      // Limpiar buffer después de pasar al CallPage
+      _pendingWebRTCSignals.clear();
+      _currentCallerId = null;
+      print(
+        '✅ [HomePage] *** BUFFER LIMPIADO *** pendingSignals y currentCallerId reset',
+      );
+    } catch (e, stackTrace) {
+      print('❌ [HomePage] *** CRASH EN _acceptCall *** $e');
+      print('❌ [HomePage] *** STACK TRACE *** $stackTrace');
+      if (mounted) {
+        _inActiveCall = false;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error al aceptar llamada: $e')));
+      }
+    }
   }
 
   @override
@@ -469,63 +529,64 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> startCall(String otherUserId) async {
     if (_calling || otherUserId.isEmpty) {
-      print('startCall: Llamada cancelada - _calling=$_calling, otherUserId=$otherUserId');
+      print(
+        '⚠️ [HomePage] *** CALL CANCELADO *** _calling=$_calling, otherUserId=$otherUserId',
+      );
       return;
     }
-    
+
     setState(() => _calling = true);
 
-    print('startCall: Iniciando llamada de ${widget.userId} a $otherUserId');
+    print(
+      '📞 [HomePage] *** INICIANDO LLAMADA *** de ${widget.userId} a $otherUserId',
+    );
+    print('📞 [HomePage] *** INICIANDO LLAMADA *** username: $username');
 
     try {
-      // Usar el endpoint HTTP correcto del servidor
-      final response = await startCallRequest(
-        callerId: widget.userId,
-        calleeId: otherUserId,
-      );
+      // Protocolo correcto: enviar call-init via WebSocket (como HTML)
+      final metadata = {
+        'displayName': username ?? 'Usuario',
+        'from': widget.userId,
+      };
 
-      print('startCall: Respuesta del servidor: $response');
+      print('📞 [HomePage] *** CALL-INIT *** enviando con metadata: $metadata');
 
-      if (response != null) {
+      SignalingService.instance.sendCallInit(otherUserId, metadata);
+
+      print('✅ [HomePage] *** CALL-INIT *** enviado via WebSocket');
+
       // Marcar que estamos en una llamada activa
       _inActiveCall = true;
-      print('startCall: Marcando llamada como activa - _inActiveCall = true');
+      print('📞 [HomePage] *** CALL STATE *** _inActiveCall = true');
 
-      // Navegar a CallPage con el callId del servidor
-      Navigator.push(
+      // Navegar a CallPage
+      print('📞 [HomePage] *** NAVEGANDO *** a CallPage');
+      print(
+        '📞 [HomePage] *** CALL PARAMS *** myUserId: ${widget.userId}, otherUserId: $otherUserId',
+      );
+
+      final result = await Navigator.push(
         context,
         MaterialPageRoute(
           builder: (_) => CallPage(
             myUserId: widget.userId,
             otherUserId: otherUserId,
-            callId: response['callId'],
+            callId: null, // No hay callId aún
             isCaller: true,
           ),
         ),
-      ).then((_) {
-        // Cuando regresa del CallPage, marcar como no activa
-        _inActiveCall = false;
-        print('startCall: Llamada terminada - _inActiveCall = false');
-      });        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Llamada iniciada con ID: ${response['callId']}'))
-          );
-        }
-      } else {
-        print('startCall: El servidor no devolvió respuesta válida');
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error: No se pudo iniciar la llamada'))
-          );
-        }
-      }
-      
+      );
+
+      // Cuando regresa del CallPage, marcar como no activa
+      _inActiveCall = false;
+      print('📞 [HomePage] *** CALL TERMINADA *** _inActiveCall = false');
+      print('📞 [HomePage] *** CALL RESULT *** $result');
     } catch (e) {
-      print('startCall: Error iniciando llamada: $e');
+      print('❌ [HomePage] *** ERROR INICIANDO LLAMADA *** $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'))
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error iniciando llamada: $e')));
       }
     } finally {
       if (mounted) setState(() => _calling = false);
@@ -558,7 +619,7 @@ class _HomePageState extends State<HomePage> {
       // Marcar que estamos en una llamada activa
       _inActiveCall = true;
       print('_callUser: Marcando llamada como activa - _inActiveCall = true');
-      
+
       Navigator.push(
         context,
         MaterialPageRoute(
@@ -710,8 +771,10 @@ class _HomePageState extends State<HomePage> {
                                     user['name'] ??
                                     user['displayName'] ??
                                     'Usuario ${user['userId'] ?? user['id']}';
-                                final userId = user['userId']?.toString() ?? user['id']?.toString() ?? '';
-                                print('HomePage: Usuario en lista - nombre: $userName, userId: $userId');
+                                final userId =
+                                    user['userId']?.toString() ??
+                                    user['id']?.toString() ??
+                                    '';
                                 return ListTile(
                                   leading: CircleAvatar(
                                     child: Icon(Icons.person),
@@ -722,25 +785,13 @@ class _HomePageState extends State<HomePage> {
                                     children: [
                                       IconButton(
                                         icon: Icon(
-                                          Icons.send,
-                                          color: Colors.blue,
-                                          size: 20,
-                                        ),
-                                        onPressed: () {
-                                          print('HomePage: 🧪 Enviando test signal a userId: $userId');
-                                          SignalingService.instance.sendSignal(userId, 'ping', {
-                                            'message': 'test from ${widget.userId}',
-                                            'timestamp': DateTime.now().millisecondsSinceEpoch,
-                                          });
-                                        },
-                                      ),
-                                      IconButton(
-                                        icon: Icon(
                                           Icons.video_call,
                                           color: Colors.green,
                                         ),
                                         onPressed: () {
-                                          print('HomePage: Iniciando llamada a userId: $userId');
+                                          print(
+                                            'HomePage: Iniciando llamada a userId: $userId',
+                                          );
                                           startCall(userId);
                                         },
                                       ),

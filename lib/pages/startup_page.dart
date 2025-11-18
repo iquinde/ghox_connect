@@ -86,6 +86,13 @@ class _StartupPageState extends State<StartupPage> {
 
     final res = await _registerUser(username);
     if (res != null) {
+      // Extraer token JWT
+      final token = res['token']?.toString();
+      if (token != null && token.isNotEmpty) {
+        await StorageService.saveToken(token);
+        print('StartupPage: saved token (${token.length} chars)');
+      }
+      
       // normalizar distintas respuestas: { user: { id: ... } } o { id: ..., username: ... }
       String? id;
       if (res['user'] is Map && res['user']['id'] != null)
